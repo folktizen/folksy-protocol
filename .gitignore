@@ -20,3 +20,6 @@
 # --- Typechain (Solidity TS Bindings) ---
 typechain/
 typechain-types/
+
+# --- Backup Folder ---
+/backup/
