@@ -1,15 +1,12 @@
 [profile.default]
-auto_detect_solc = true
 src = "src"
-out = "out"
+test = "tests"
 libs = ["lib"]
-test = "test"
-bytecode_hash = "none"
-cbor_metadata = false
-evm_version = "cancun"
+out = "out"
 optimizer = true
-optimizer_runs = 1_000_000
-viaIR = true
+solc_version = "0.8.30"
+evm_version = "cancun"
+via_ir = true
 
 [rpc_endpoints]
 base-sepolia = "${BASE_SEPOLIA_RPC_URL}"
@@ -20,4 +17,10 @@ base-sepolia = { key = "${ETHERSCAN_API_KEY_V2}" }
 base = { key = "${ETHERSCAN_API_KEY_V2}" }
 
 [fmt]
+tab_width = 2
+line_length = 120
+bracket_spacing = true
+quote_style = "double"
 number_underscore = "thousands"
+multiline_func_header = "params_first"
+ignore = ["lib/**"]

@@ -13,4 +13,4 @@ export RPC_URL=$BASE_RPC_URL
 
 read -p "Press enter to begin the dry run deployment..."
 
-forge script script/deploy.s.sol:Deploy --rpc-url $RPC_URL --ffi --slow --private-key $PRIVATE_KEY -- --dry-run
+forge script script/deploy.s.sol:Deploy --rpc-url $RPC_URL --slow --private-key $PRIVATE_KEY -- --dry-run

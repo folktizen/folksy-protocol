@@ -1,0 +1,7 @@
+{
+  "engineContract": "0x71A48ED56f98E612F67746D4D51a5c25Ad73d5aA",
+  "strategyContract": "0x4A8f39a549baCcd8A5106d9034De20315221ed04",
+  "oracleContract": "0xe59397eE1ba13E1eBD7b1a916e1a48A221cFc581",
+  "moonwellConnector": "0xaDe4A82f06E8e6a91B26fD59c840169CeDBd6adB",
+  "morphoConnector": "0x5F069DfA6882419F5FF0854a59c5F8DA4e253d95"
+}
