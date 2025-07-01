@@ -13,4 +13,4 @@ export RPC_URL=$BASE_RPC_URL
 
 read -p "Press enter to begin the deployment..."
 
-forge script script/deploy.s.sol:Deploy --rpc-url $RPC_URL --broadcast --private-key $PRIVATE_KEY --verify --delay 15
+forge script script/deploy.s.sol:Deploy --rpc-url $RPC_URL --broadcast -vvvv --private-key $PRIVATE_KEY --verify --delay 15

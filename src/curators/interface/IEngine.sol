@@ -18,4 +18,6 @@ pragma solidity ^0.8.30;
 //
 //////////////////////////////////////////////////////////////////
 
-interface IEngine {}
+interface IEngine {
+    function join(bytes32 _strategyId, address _strategyModule, uint256[] memory _amounts) external;
+}

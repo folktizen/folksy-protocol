@@ -18,6 +18,8 @@ pragma solidity ^0.8.30;
 //
 //////////////////////////////////////////////////////////////////
 
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
 interface MErc20Interface {
     /**
      * User Interface **
@@ -28,15 +30,11 @@ interface MErc20Interface {
     function borrow(uint256 borrowAmount) external returns (uint256);
     function repayBorrow(uint256 repayAmount) external returns (uint256);
     function repayBorrowBehalf(address borrower, uint256 repayAmount) external returns (uint256);
+    function exchangeRateCurrent() external returns (uint256);
     // function liquidateBorrow(address borrower, uint256 repayAmount, MTokenInterface mTokenCollateral)
     //     external
     //     returns (uint256);
     // function sweepToken(EIP20NonStandardInterface token) external;
-
-    /**
-     * Admin Functions **
-     */
-    function _addReserves(uint256 addAmount) external returns (uint256);
 }
 
 interface ComptrollerInterface {
@@ -48,4 +46,13 @@ interface ComptrollerInterface {
      */
     function enterMarkets(address[] calldata mTokens) external returns (uint256[] memory);
     function exitMarket(address mToken) external returns (uint256);
+}
+
+/// @title Interface for WETH9
+interface IWETH9 is IERC20 {
+    /// @notice Deposit ether to get wrapped ether
+    function deposit() external payable;
+
+    /// @notice Withdraw wrapped ether to get ether
+    function withdraw(uint256) external;
 }

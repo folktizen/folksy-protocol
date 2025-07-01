@@ -17,3 +17,12 @@ pragma solidity ^0.8.30;
 //   \__/     \"_____/    \_______)(__|  \__)(_______/  |___/
 //
 //////////////////////////////////////////////////////////////////
+
+interface MorphInterface {
+    /**
+     * User Interface **
+     */
+    function deposit(uint256 assets, address receiver) external returns (uint256 shares);
+
+    function redeem(uint256 shares, address receiver, address owner) external returns (uint256 assets);
+}

@@ -18,7 +18,8 @@ pragma solidity ^0.8.30;
 //
 //////////////////////////////////////////////////////////////////
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
 import {IRouter} from "@aerodrome/contracts/contracts/interfaces/IRouter.sol";
 import {IPool} from "@aerodrome/contracts/contracts/interfaces/IPool.sol";
 import {IPoolFactory} from "@aerodrome/contracts/contracts/interfaces/factories/IPoolFactory.sol";
@@ -26,6 +27,9 @@ import {IPoolFactory} from "@aerodrome/contracts/contracts/interfaces/factories/
 import {BaseConnector} from "../../../../BaseConnector.sol";
 import {Constants} from "../../../common/constant.sol";
 import {AerodromeUtils} from "./utils.sol";
+import "../../../../curators/interface/IStrategy.sol";
+import "../../../../curators/interface/IEngine.sol";
+import "../../../../curators/interface/IOracle.sol";
 import "./interface.sol";
 import "./events.sol";
 
@@ -38,6 +42,15 @@ contract AerodromeBasicConnector is BaseConnector, Constants, AerodromeEvents {
     /// @notice Factory contract for creating and managing Aerodrome pools
     IPoolFactory public immutable aerodromeFactory;
 
+    /// @notice Oracle contract fetches the price of different tokens
+    IFolksyStrategy public immutable strategyModule;
+
+    /// @notice Engine contract
+    IEngine public immutable engine;
+
+    /// @notice Oracle contract fetches the price of different tokens
+    IOracle public immutable oracle;
+
     /* ========== ERRORS ========== */
 
     /// @notice Thrown when execution fails with a specific reason
@@ -46,8 +59,8 @@ contract AerodromeBasicConnector is BaseConnector, Constants, AerodromeEvents {
     /// @notice Thrown when an invalid action type is provided
     error InvalidAction();
 
-    /// @notice Thrown when transaction deadline has passed
-    error DeadlineExpired();
+    /// @notice Thrown when asset out is not the same as pool address
+    error AssetOutNotPool();
 
     /// @notice Thrown when pool has insufficient liquidity
     error InsufficientLiquidity();
@@ -67,9 +80,20 @@ contract AerodromeBasicConnector is BaseConnector, Constants, AerodromeEvents {
     /// @notice Initializes the AerodromeConnector
     /// @param name Name of the Connector
     /// @param connectorType Type of connector
-    constructor(string memory name, ConnectorType connectorType) BaseConnector(name, connectorType) {
+    constructor(string memory name, ConnectorType connectorType, address _strategy, address _engine, address _oracle)
+        BaseConnector(name, connectorType)
+    {
         aerodromeRouter = IRouter(AERODROME_ROUTER);
         aerodromeFactory = IPoolFactory(AERODROME_FACTORY);
+
+        strategyModule = IFolksyStrategy(_strategy);
+        engine = IEngine(_engine);
+        oracle = IOracle(_oracle);
+    }
+
+    modifier onlyEngine() {
+        require(msg.sender == address(engine), "caller is not the execution engine");
+        _;
     }
 
     receive() external payable {}
@@ -80,34 +104,49 @@ contract AerodromeBasicConnector is BaseConnector, Constants, AerodromeEvents {
     function execute(
         ActionType actionType,
         address[] memory assetsIn,
-        uint256[] memory amounts,
         address assetOut,
+        uint256 stepIndex,
         uint256 amountRatio,
-        uint256 prevLoopAmountOut,
         bytes32 strategyId,
         address userAddress,
         bytes calldata data
-    ) external payable override returns (uint256) {
-        // TODO: also ensure that the original caller is execution engine
-        address executionEngine = msg.sender;
-
+    )
+        external
+        payable
+        override
+        onlyEngine
+        returns (address, address[] memory, uint256[] memory, address, uint256, address[] memory, uint256[] memory)
+    {
         if (actionType == ActionType.SUPPLY) {
-            (uint256 amountA, uint256 amountB, uint256 liquidity) = _depositBasicLiquidity(data, executionEngine);
-            // return abi.encode(amountA, amountB, liquidity);
-            return 1;
+            return _depositBasicLiquidity(strategyId, userAddress, assetsIn, assetOut, amountRatio, data);
         } else if (actionType == ActionType.WITHDRAW) {
-            (uint256 amountA, uint256 amountB) = _removeBasicLiquidity(data, executionEngine);
-            // return abi.encode(amountA, amountB);
-            return 1;
-        } else if (actionType == ActionType.SWAP) {
-            uint256[] memory amounts = _swapExactTokensForTokens(data, executionEngine);
-            // return abi.encode(amounts);
-            return 1;
-        } else if (actionType == ActionType.STAKE) {
-            // return _depositToGauge(data, executionEngine);
-            return 1;
+            return _removeBasicLiquidity(strategyId, userAddress, assetsIn, assetOut, amountRatio, stepIndex, data);
         }
-        revert InvalidAction();
+        // else if (actionType == ActionType.SWAP) {
+        //     uint256[] memory amounts = _swapExactTokensForTokens(data, executionEngine);
+        //     // return abi.encode(amounts);
+        //     return 1;
+        // } else if (actionType == ActionType.STAKE) {
+        //     // return _depositToGauge(data, executionEngine);
+        //     return 1;
+        // }
+        // revert InvalidAction();
+    }
+
+    /// @notice Initially updates the user token balance
+    function initialTokenBalanceUpdate(bytes32 strategyId, address userAddress, address token, uint256 amount)
+        external
+        onlyEngine
+    {
+        strategyModule.updateUserTokenBalance(strategyId, userAddress, token, amount, 0);
+    }
+
+    /// @notice Withdraw user asset
+    function withdrawAsset(bytes32 _strategyId, address _user, address _token) external onlyEngine returns (bool) {
+        uint256 tokenBalance = strategyModule.getUserTokenBalance(_strategyId, _user, _token);
+
+        require(strategyModule.transferToken(_token, tokenBalance), "Not enough tokens for withdrawal");
+        return ERC20(_token).transfer(_user, tokenBalance);
     }
 
     /// @notice Swaps exact tokens for tokens on the Aerodrome protocol
@@ -121,13 +160,13 @@ contract AerodromeBasicConnector is BaseConnector, Constants, AerodromeEvents {
         (uint256 amountIn, uint256 minReturnAmount, IRouter.Route[] memory routes, address to, uint256 deadline) =
             abi.decode(data[4:], (uint256, uint256, IRouter.Route[], address, uint256));
 
-        if (block.timestamp > deadline) revert DeadlineExpired();
+        // if (block.timestamp > deadline) revert DeadlineExpired();
 
         address tokenIn = routes[0].from;
 
         _receiveTokensFromCaller(tokenIn, amountIn, address(0), 0, caller);
 
-        IERC20(tokenIn).approve(address(aerodromeRouter), amountIn);
+        ERC20(tokenIn).approve(address(aerodromeRouter), amountIn);
 
         address tokenOut = routes[routes.length - 1].to;
 
@@ -151,34 +190,53 @@ contract AerodromeBasicConnector is BaseConnector, Constants, AerodromeEvents {
 
     /// @notice Deposits liquidity into an Aerodrome pool
     /// @dev Handles the process of adding liquidity, including price checks and token swaps
-    /// @param data The encoded parameters for the desired action
-    /// @param caller The original caller of this function
-    /// @return amountAUsed The amount of tokenA actually deposited
-    /// @return amountBUsed The amount of tokenB actually deposited
-    /// @return liquidityDeposited The amount of liquidity tokens received
-    function _depositBasicLiquidity(bytes calldata data, address caller)
+    /// @param strategyId The id of the strategy
+    /// @param userAddress The user's address
+    /// @param assetsIn The encoded parameters for the desired action
+    /// @param assetOut The address of the lp token
+    /// @param amountRatio The percentage of the amount to use
+    /// @param data The data
+    function _depositBasicLiquidity(
+        bytes32 strategyId,
+        address userAddress,
+        address[] memory assetsIn,
+        address assetOut,
+        uint256 amountRatio,
+        bytes calldata data
+    )
         internal
-        returns (uint256 amountAUsed, uint256 amountBUsed, uint256 liquidityDeposited)
+        returns (address, address[] memory, uint256[] memory, address, uint256, address[] memory, uint256[] memory)
     {
-        (
-            address tokenA,
-            address tokenB,
-            bool stable,
-            uint256 amountAIn,
-            uint256 amountBIn,
-            uint256 amountAMin,
-            uint256 amountBMin,
-            bool balanceTokenRatio,
-            address to,
-            uint256 deadline
-        ) = abi.decode(data[4:], (address, address, bool, uint256, uint256, uint256, uint256, bool, address, uint256));
+        uint256 amountAUsed;
+        uint256 amountBUsed;
+        uint256 liquidityDeposited;
 
-        if (block.timestamp > deadline) revert DeadlineExpired();
+        (bool stable, bool balanceTokenRatio) = abi.decode(data, (bool, bool));
+
+        address tokenA = assetsIn[0];
+        address tokenB = assetsIn[1];
+        uint256 amountA = strategyModule.getUserTokenBalance(strategyId, userAddress, tokenA);
+        uint256 amountB = strategyModule.getUserTokenBalance(strategyId, userAddress, tokenB);
+        uint256 deadline = block.timestamp + 100;
 
         address pool = aerodromeFactory.getPool(tokenA, tokenB, stable);
         if (pool == address(0)) revert PoolDoesNotExist();
+        if (pool != assetOut) revert AssetOutNotPool();
 
-        _receiveTokensFromCaller(tokenA, amountAIn, tokenB, amountBIn, caller);
+        uint256 amountAIn = (amountRatio * amountA) / 10_000;
+        uint256 amountBIn = (amountRatio * amountB) / 10_000;
+
+        // transfer tokenA and tokenB from Strategy Module
+        require(strategyModule.transferToken(tokenA, amountAIn), "Not enough tokenA");
+        require(strategyModule.transferToken(tokenB, amountBIn), "Not enough tokenB");
+
+        uint256[] memory assetsInAmounts = new uint256[](2);
+        assetsInAmounts[0] = amountA;
+        assetsInAmounts[1] = amountB;
+
+        // update balance
+        strategyModule.updateUserTokenBalance(strategyId, userAddress, tokenA, amountAIn, 1);
+        strategyModule.updateUserTokenBalance(strategyId, userAddress, tokenB, amountBIn, 1);
 
         uint256 ratioBefore = AerodromeUtils.reserveRatio(pool);
 
@@ -195,8 +253,8 @@ contract AerodromeBasicConnector is BaseConnector, Constants, AerodromeEvents {
                     AerodromeUtils.updateAmountsIn(amountALeft, amountBLeft, sellTokenA, amounts);
             }
             // Approve tokens to router
-            IERC20(tokenA).approve(address(aerodromeRouter), amountALeft);
-            IERC20(tokenB).approve(address(aerodromeRouter), amountBLeft);
+            ERC20(tokenA).approve(address(aerodromeRouter), amountALeft);
+            ERC20(tokenB).approve(address(aerodromeRouter), amountBLeft);
 
             (uint256 amountADeposited, uint256 amountBDeposited, uint256 liquidity) = aerodromeRouter.addLiquidity(
                 tokenA,
@@ -206,7 +264,7 @@ contract AerodromeBasicConnector is BaseConnector, Constants, AerodromeEvents {
                 amountBLeft,
                 0,
                 0,
-                to,
+                address(strategyModule),
                 deadline // 0 amountOutMin because we do checkValueOut()
             );
 
@@ -222,48 +280,88 @@ contract AerodromeBasicConnector is BaseConnector, Constants, AerodromeEvents {
         }
         AerodromeUtils.checkPriceImpact(pool, ratioBefore);
 
-        AerodromeUtils.checkValueOut(
-            liquidityDeposited, tokenA, tokenB, stable, amountAMin, amountBMin, amountAIn, amountBIn
-        );
+        AerodromeUtils.checkValueOut(liquidityDeposited, tokenA, tokenB, stable, 0, 0, amountAIn, amountBIn);
 
-        AerodromeUtils.returnLeftovers(tokenA, tokenB, amountALeft, amountBLeft, caller);
+        // return left overs to strategy
+        if (amountALeft > 0 && _transferToken(tokenA, amountALeft)) {
+            strategyModule.updateUserTokenBalance(strategyId, userAddress, tokenA, amountALeft, 0);
+        }
+        if (amountBLeft > 0 && _transferToken(tokenB, amountBLeft)) {
+            strategyModule.updateUserTokenBalance(strategyId, userAddress, tokenB, amountBLeft, 0);
+        }
+
+        // update lp balance
+        strategyModule.updateUserTokenBalance(strategyId, userAddress, assetOut, liquidityDeposited, 0);
 
         emit LiquidityAdded(tokenA, tokenB, amountAUsed, amountBUsed, liquidityDeposited);
+
+        uint256[] memory underlyingAmounts = new uint256[](2);
+        underlyingAmounts[0] = amountAUsed;
+        underlyingAmounts[1] = amountBUsed;
+
+        // return
+        return (AERODROME_ROUTER, assetsIn, assetsInAmounts, assetOut, liquidityDeposited, assetsIn, underlyingAmounts);
     }
 
     /// @notice Removes liquidity from an Aerodrome pool
     /// @dev Handles the process of removing liquidity and receiving tokens
-    /// @param data The encoded parameters for the desired action
-    /// @param caller The address of the original caller
-    /// @return amountA The amount of tokenA received
-    /// @return amountB The amount of tokenB received
-    function _removeBasicLiquidity(bytes calldata data, address caller)
+    /// @param strategyId The id of the strategy
+    /// @param userAddress The user's address
+    /// @param assetsIn The encoded parameters for the desired action
+    /// @param assetOut The address of the lp token
+    /// @param amountRatio The percentage of the amount to use
+    /// @param stepIndex The current strategy step index
+    /// @param data The data
+    function _removeBasicLiquidity(
+        bytes32 strategyId,
+        address userAddress,
+        address[] memory assetsIn,
+        address assetOut,
+        uint256 amountRatio,
+        uint256 stepIndex,
+        bytes calldata data
+    )
         internal
-        returns (uint256 amountA, uint256 amountB)
+        returns (address, address[] memory, uint256[] memory, address, uint256, address[] memory, uint256[] memory)
     {
-        (
-            address tokenA,
-            address tokenB,
-            bool stable,
-            uint256 liquidity,
-            uint256 amountAMin,
-            uint256 amountBMin,
-            address to,
-            uint256 deadline
-        ) = abi.decode(data[4:], (address, address, bool, uint256, uint256, uint256, address, uint256));
+        (bool stable, bool balanceTokenRatio) = abi.decode(data, (bool, bool));
+        uint256 deadline = block.timestamp + 100;
 
-        if (block.timestamp > deadline) revert DeadlineExpired();
+        // get userShareBalance of current step
+        IFolksyStrategy.ShareBalance memory userShareBalance =
+            strategyModule.getUserShareBalance(strategyId, userAddress, AERODROME_ROUTER, assetsIn[0], stepIndex);
+
+        uint256 lpBalance = userShareBalance.shareAmount;
+        address tokenA = userShareBalance.underlyingTokens[0];
+        address tokenB = userShareBalance.underlyingTokens[1];
+        // uint256 amountAMin = userShareBalance.underlyingAmounts[0];
+        // uint256 amountBMin = userShareBalance.underlyingAmounts[1];
+        uint256 amountAMin = 0;
+        uint256 amountBMin = 0;
 
         address pool = aerodromeFactory.getPool(tokenA, tokenB, stable);
         if (pool == address(0)) revert PoolDoesNotExist();
+        if (pool != assetsIn[0]) revert AssetOutNotPool();
 
-        IERC20(pool).transferFrom(caller, address(this), liquidity);
-        IERC20(pool).approve(address(aerodromeRouter), liquidity);
+        // transfer token from Strategy Module
+        require(strategyModule.transferToken(assetsIn[0], lpBalance), "not enough borrowed token");
 
-        (amountA, amountB) =
-            aerodromeRouter.removeLiquidity(tokenA, tokenB, stable, liquidity, amountAMin, amountBMin, to, deadline);
+        // update balance
+        strategyModule.updateUserTokenBalance(strategyId, userAddress, assetsIn[0], lpBalance, 1);
 
-        emit LiquidityRemoved(tokenA, tokenB, amountA, amountB, liquidity);
+        // ERC20(pool).transferFrom(caller, address(this), liquidity);
+        ERC20(pool).approve(address(aerodromeRouter), lpBalance);
+
+        (uint256 amountA, uint256 amountB) = aerodromeRouter.removeLiquidity(
+            tokenA, tokenB, stable, lpBalance, amountAMin, amountBMin, address(strategyModule), deadline
+        );
+
+        strategyModule.updateUserTokenBalance(strategyId, userAddress, tokenA, amountA, 0);
+        strategyModule.updateUserTokenBalance(strategyId, userAddress, tokenB, amountB, 0);
+
+        emit LiquidityRemoved(tokenA, tokenB, amountA, amountB, lpBalance);
+
+        return (AERODROME_ROUTER, new address[](0), new uint256[](0), address(0), 0, new address[](0), new uint256[](0));
     }
 
     /// @notice Deposits LP tokens into a gauge
@@ -275,13 +373,18 @@ contract AerodromeBasicConnector is BaseConnector, Constants, AerodromeEvents {
 
         address lpToken = IGauge(gaugeAddress).stakingToken();
 
-        IERC20(lpToken).transferFrom(caller, address(this), amount);
-        IERC20(lpToken).approve(gaugeAddress, amount);
+        ERC20(lpToken).transferFrom(caller, address(this), amount);
+        ERC20(lpToken).approve(gaugeAddress, amount);
 
         IGauge(gaugeAddress).deposit(amount, caller);
 
         emit LPTokenStaked(gaugeAddress, amount);
         return abi.encode(amount, caller);
+    }
+
+    /// @notice Transfers tokens to the strategyModule contract
+    function _transferToken(address _token, uint256 _amount) internal returns (bool) {
+        return ERC20(_token).transfer(address(strategyModule), _amount);
     }
 
     /// @notice Transfers tokens from the caller to the contract
@@ -294,7 +397,7 @@ contract AerodromeBasicConnector is BaseConnector, Constants, AerodromeEvents {
 
                 IWETH(WETH).deposit{value: msg.value}();
             } else {
-                IERC20(tokenA).transferFrom(caller, address(this), amountA);
+                ERC20(tokenA).transferFrom(caller, address(this), amountA);
             }
         }
         if (amountB > 0) {
@@ -303,7 +406,7 @@ contract AerodromeBasicConnector is BaseConnector, Constants, AerodromeEvents {
 
                 IWETH(WETH).deposit{value: msg.value}();
             } else {
-                IERC20(tokenB).transferFrom(caller, address(this), amountB);
+                ERC20(tokenB).transferFrom(caller, address(this), amountB);
             }
         }
     }

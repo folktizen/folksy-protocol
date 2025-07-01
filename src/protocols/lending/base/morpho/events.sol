@@ -17,3 +17,11 @@ pragma solidity ^0.8.30;
 //   \__/     \"_____/    \_______)(__|  \__)(_______/  |___/
 //
 //////////////////////////////////////////////////////////////////
+
+/**
+ * @title MorphEvents
+ * @dev Contract that defines events for tracking liquidity operations, swaps, staking,
+ * and reward claiming in the Aerodrome protocol. These events enable efficient off-chain
+ * tracking of protocol activities.
+ */
+contract MorphEvents {}
