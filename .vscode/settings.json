@@ -1,0 +1,12 @@
+{
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/cache": true,
+    "**/lib": true,
+    "*-lock.yaml": true,
+    "*.lock": true
+  },
+  "editor.quickSuggestions": {
+    "strings": true
+  }
+}

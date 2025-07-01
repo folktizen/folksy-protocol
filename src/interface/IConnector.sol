@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.30;
+
+//////////////////////////////////////////////////////////////////
+// @title   Folksy Protocol
+// @notice  More at: https://folksy.space
+// @version 1.1.0.CENDOL
+// @author  Folktizen Labs
+//////////////////////////////////////////////////////////////////
+//
+//    _______   ______    ___       __   ___   ________  ___  ___
+//   /"     "| /    " \  |"  |     |/"| /  ") /"       )|"  \/"  |
+//  (: ______)// ____  \ ||  |     (: |/   / (:   \___/  \   \  /
+//   \/    | /  /    ) :)|:  |     |    __/   \___  \     \\  \/
+//   // ___)(: (____/ //  \  |___  (// _  \    __/  \\    /   /
+//  (:  (    \        /  ( \_|:  \ |: | \  \  /" \   :)  /   /
+//   \__/     \"_____/    \_______)(__|  \__)(_______/  |___/
+//
+//////////////////////////////////////////////////////////////////
+
+interface IConnector {
+    /// @notice Core actions that a protocol can perform
+    enum ActionType {
+        SUPPLY, // Supply assets
+        WITHDRAW, // Withdraw assets
+        BORROW, // Borrow assets
+        REPAY, // Repay debt
+        STAKE, // Stake assets
+        UNSTAKE, // Unstake assets
+        SWAP, // Swap assets
+        CLAIM // Claim rewards
+
+    }
+
+    enum ConnectorType {
+        LENDING,
+        DEX,
+        YIELD
+    }
+
+    function getConnectorName() external view returns (bytes32);
+    function getConnectorType() external view returns (ConnectorType);
+    /// @notice Standard action execution interface
+    function execute(
+        ActionType actionType,
+        address[] memory assetsIn,
+        uint256[] memory amounts,
+        address assetOut,
+        uint256 amountRatio,
+        uint256 prevLoopAmountOut,
+        bytes32 strategyId,
+        address userAddress,
+        bytes calldata data
+    ) external payable returns (uint256 amountOut);
+}

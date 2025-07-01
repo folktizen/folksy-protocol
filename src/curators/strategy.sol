@@ -1,0 +1,384 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.30;
+
+//////////////////////////////////////////////////////////////////
+// @title   Folksy Protocol
+// @notice  More at: https://folksy.space
+// @version 1.1.0.CENDOL
+// @author  Folktizen Labs
+//////////////////////////////////////////////////////////////////
+//
+//    _______   ______    ___       __   ___   ________  ___  ___
+//   /"     "| /    " \  |"  |     |/"| /  ") /"       )|"  \/"  |
+//  (: ______)// ____  \ ||  |     (: |/   / (:   \___/  \   \  /
+//   \/    | /  /    ) :)|:  |     |    __/   \___  \     \\  \/
+//   // ___)(: (____/ //  \  |___  (// _  \    __/  \\    /   /
+//  (:  (    \        /  ( \_|:  \ |: | \  \  /" \   :)  /   /
+//   \__/     \"_____/    \_______)(__|  \__)(_______/  |___/
+//
+//////////////////////////////////////////////////////////////////
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "./interface/IStrategy.sol";
+
+contract Strategy {
+    // curator => array of strategies
+    mapping(address => IFolksyStrategy.Strategy[]) curatorStrategies;
+
+    // strategy ID => strategies
+    mapping(bytes32 => IFolksyStrategy.Strategy) public strategies;
+
+    // strategyId => stats
+    mapping(bytes32 => IFolksyStrategy.StrategyStats) public strategyStats;
+
+    // strategyId => user => userStats
+    mapping(bytes32 => mapping(address => IFolksyStrategy.UserStats)) public userStats;
+
+    // user => strategyIds
+    mapping(address => bytes32[]) public userStrategies;
+
+    // Array to keep track of all strategy IDs
+    bytes32[] public allStrategyIds;
+
+    /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
+    /*                          EVENTS                            */
+    /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
+
+    /**
+     * @dev Emitted when a strategy is created
+     * @param strategyId unique identifier for the strategy
+     * @param curator address of the user creating the strategy
+     * @param name descriptive, human-readable name for the strategy
+     * @param strategyDescription human-readable description for the strategy
+     * @param steps array representing the individual steps involved in the strategy
+     * @param minDeposit minimum amount of liquidity a user must provide to participate in the strategy
+     * @param maxTVL maximum total value of liquidity allowed in the strategy
+     * @param performanceFee fee charged on the strategy
+     */
+    event CreateStrategy(
+        bytes32 indexed strategyId,
+        address indexed curator,
+        string indexed name,
+        string strategyDescription,
+        IFolksyStrategy.Step[] steps,
+        uint256 minDeposit,
+        uint256 maxTVL,
+        uint256 performanceFee
+    );
+
+    /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
+    /*                           ERROR                            */
+    /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
+
+    error StrategyNotFound(bytes32 strategyId);
+    error StrategyAlreadyExists(bytes32 strategyId);
+    error Unauthorized(address caller);
+
+    /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
+    /*                       MODIFIERS                            */
+    /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
+
+    // modifier onlyConnectors() {
+    //     require(msg.sender == connectors, "Not connectors");
+    //     _;
+    // }
+
+    // modifier onlyEngine() {
+    //     require(msg.sender == engine, "Not engine");
+    //     _;
+    // }
+
+    /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
+    /*                       PUBLIC FUNCTIONS                     */
+    /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
+
+    /**
+     * @dev Create a strategy
+     * @param _name descriptive, human-readable name for the strategy
+     * @param _strategyDescription human-readable description for the strategy
+     * @param _steps array representing the individual steps involved in the strategy
+     * @param _minDeposit minimum amount of liquidity a user must provide to participate in the strategy
+     * @param _maxTVL maximum total value of liquidity allowed in the strategy
+     * @param _performanceFee fee charged on the strategy
+     */
+    function createStrategy(
+        string memory _name,
+        string memory _strategyDescription,
+        IFolksyStrategy.Step[] memory _steps,
+        uint256 _minDeposit,
+        uint256 _maxTVL,
+        uint256 _performanceFee
+    ) public {
+        bytes32 _strategyId = keccak256(abi.encodePacked(msg.sender, _name, _strategyDescription));
+        // Check if strategy already exists
+        if (strategies[_strategyId].curator != address(0)) {
+            revert StrategyAlreadyExists(_strategyId);
+        }
+
+        IFolksyStrategy.Strategy memory _strategy = IFolksyStrategy.Strategy({
+            strategyId: _strategyId,
+            curator: msg.sender,
+            name: _name,
+            strategyDescription: _strategyDescription,
+            steps: _steps,
+            minDeposit: _minDeposit,
+            maxTVL: _maxTVL,
+            performanceFee: _performanceFee
+        });
+
+        // Validate curator's strategy steps
+        require(_validateSteps(_steps), "Invalid steps");
+
+        // Store strategy in all relevant mappings
+        strategies[_strategyId] = _strategy;
+        // Store curator's strategy
+        curatorStrategies[msg.sender].push(_strategy);
+        // Add to array of all strategy IDs
+        allStrategyIds.push(_strategyId);
+
+        uint256[] memory _totalDeposits = new uint256[](_steps[0].assetsIn.length);
+        // Initialize strategy stats
+        strategyStats[_strategyId] = IFolksyStrategy.StrategyStats({
+            totalDeposits: _totalDeposits,
+            totalUsers: 0,
+            totalFeeGenerated: 0,
+            lastUpdated: block.timestamp
+        });
+
+        emit CreateStrategy(
+            _strategyId, msg.sender, _name, _strategyDescription, _steps, _minDeposit, _maxTVL, _performanceFee
+        );
+    }
+
+    function transferToken(address _token, uint256 _amount) public returns (bool) {
+        // check if amount equals or more than available balance first
+        return IERC20(_token).transfer(msg.sender, _amount);
+    }
+
+    /**
+     * @dev Update user stats
+     */
+    function updateUserStats(
+        bytes32 _strategyId,
+        address _userAddress,
+        address _asset,
+        address _protocol,
+        address _shareToken,
+        address[] memory _underlyingTokens,
+        uint256 _assetAmount,
+        uint256 _amountInUsd,
+        uint256 _shareAmount,
+        uint256[] memory _underlyingAmounts
+    ) public {
+        // Get user's stats
+        IFolksyStrategy.UserStats storage _userStats = userStats[_strategyId][_userAddress];
+
+        IFolksyStrategy.AssetBalance memory tempAssetBal = IFolksyStrategy.AssetBalance({
+            asset: _asset,
+            amount: _assetAmount,
+            usdValue: _amountInUsd,
+            lastUpdated: block.timestamp
+        });
+
+        IFolksyStrategy.ShareBalance memory tempShareBal = IFolksyStrategy.ShareBalance({
+            protocol: _protocol,
+            shareToken: _shareToken,
+            shareAmount: _shareAmount,
+            underlyingTokens: _underlyingTokens,
+            underlyingAmounts: _underlyingAmounts,
+            lastUpdated: block.timestamp
+        });
+
+        //
+        if (_userStats.initialDeposit == 0) {
+            _userStats.initialDeposit = _amountInUsd;
+            _userStats.totalDepositedUSD = _amountInUsd;
+            _userStats.joinTimestamp = block.timestamp;
+
+            _userStats.tokenBalances.push(tempAssetBal);
+            _userStats.shareBalances.push(tempShareBal);
+        } else {
+            // totalWithdrawnUSD, totalReward, feesPaid
+            _userStats.totalDepositedUSD += _amountInUsd;
+
+            _userStats.tokenBalances.push(tempAssetBal);
+            _userStats.shareBalances.push(tempShareBal);
+        }
+    }
+
+    /**
+     * @dev Update strategy stats
+     */
+    function updateStrategyStats(bytes32 strategyId, uint256[] memory amounts, uint256 performanceFee) public {
+        IFolksyStrategy.StrategyStats storage _strategyStats = strategyStats[strategyId];
+
+        for (uint256 i; i < amounts.length; i++) {
+            _strategyStats.totalDeposits[i] += amounts[i];
+        }
+
+        _strategyStats.totalUsers++;
+        _strategyStats.totalFeeGenerated += performanceFee;
+        _strategyStats.lastUpdated = block.timestamp;
+    }
+
+    /**
+     * @dev Get strategy by strategy id
+     * @param _strategyId strategy identity
+     */
+    function getStrategy(bytes32 _strategyId) public view returns (IFolksyStrategy.Strategy memory) {
+        IFolksyStrategy.Strategy memory strategy = strategies[_strategyId];
+        if (strategy.curator == address(0)) {
+            revert StrategyNotFound(_strategyId);
+        }
+        return strategy;
+    }
+
+    /**
+     * @dev Get all strategies for a curator
+     * @param _curator address of the user that created the strategies
+     */
+    function getStrategy(address _curator) public view returns (IFolksyStrategy.Strategy[] memory) {
+        return curatorStrategies[_curator];
+    }
+
+    /**
+     * @dev Get data on a particular strategy
+     * @param _strategyId ID of a strategy
+     */
+    function getStrategyStats(bytes32 _strategyId) public view returns (IFolksyStrategy.StrategyStats memory) {
+        return strategyStats[_strategyId];
+    }
+
+    /**
+     * @dev Get all strategies
+     * @return allStrategies Array of all strategies
+     */
+    function getAllStrategies() public view returns (IFolksyStrategy.Strategy[] memory) {
+        uint256 length = allStrategyIds.length;
+        IFolksyStrategy.Strategy[] memory allStrategies = new IFolksyStrategy.Strategy[](length);
+
+        for (uint256 i = 0; i < length; i++) {
+            allStrategies[i] = strategies[allStrategyIds[i]];
+        }
+
+        return allStrategies;
+    }
+
+    /**
+     * @dev Get total number of strategies
+     * @return Total number of strategies
+     */
+    function getTotalStrategies() public view returns (uint256) {
+        return allStrategyIds.length;
+    }
+
+    /**
+     * @dev Get all strategies that a user has participated in
+     * @param _user address of the user to get strategies for
+     * @return array of strategy IDs the user has participated in
+     */
+    function getUserStrategies(address _user) public view returns (bytes32[] memory) {
+        return userStrategies[_user];
+    }
+    /**
+     * @dev Get user's balance for a specific asset in a strategy
+     * @param _strategyId ID of the strategy
+     * @param _user Address of the user
+     * @param _asset Address of the token to check balance for
+     * @return AssetBalance struct containing token balance details
+     */
+
+    function getUserAssetBalance(bytes32 _strategyId, address _user, address _asset)
+        public
+        view
+        returns (IFolksyStrategy.AssetBalance memory)
+    {
+        IFolksyStrategy.UserStats memory stats = userStats[_strategyId][_user];
+        for (uint256 i = 0; i < stats.tokenBalances.length; i++) {
+            if (stats.tokenBalances[i].asset == _asset) {
+                return stats.tokenBalances[i];
+            }
+        }
+        return IFolksyStrategy.AssetBalance(_asset, 0, 0, 0);
+    }
+
+    /**
+     * @dev Get user's share balance for a specific protocol and Share token in a strategy
+     * @param _strategyId ID of the strategy
+     * @param _user Address of the user
+     * @param _protocol Address of the protocol (e.g. Aerodrome)
+     * @param _shareToken Address of the Share token
+     * @return ShareBalance struct containing share balance details
+     */
+    function getUserShareBalance(bytes32 _strategyId, address _user, address _protocol, address _shareToken)
+        public
+        view
+        returns (IFolksyStrategy.ShareBalance memory)
+    {
+        IFolksyStrategy.UserStats memory stats = userStats[_strategyId][_user];
+        for (uint256 i = 0; i < stats.shareBalances.length; i++) {
+            if (stats.shareBalances[i].protocol == _protocol && stats.shareBalances[i].shareToken == _shareToken) {
+                return stats.shareBalances[i];
+            }
+        }
+        return IFolksyStrategy.ShareBalance(_protocol, _shareToken, 0, new address[](0), new uint256[](0), 0);
+    }
+
+    /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
+    /*                     INTERNAL FUNCTIONS                     */
+    /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
+
+    /**
+     * @dev Validate each step in the strategy
+     * @param steps array representing the individual steps involved in the strategy
+     */
+    function _validateSteps(IFolksyStrategy.Step[] memory steps) internal view returns (bool) {
+        for (uint256 i = 0; i < steps.length; i++) {
+            // Validate connector address
+            require(steps[i].connector != address(0), "Invalid connector address");
+
+            // Validate assets
+            for (uint256 j; j < steps[i].assetsIn.length; j++) {
+                require(steps[i].assetsIn[j] != address(0), "Invalid input asset");
+            }
+            if (steps[i].actionType != IConnector.ActionType.SUPPLY) {
+                require(steps[i].assetOut != address(0), "Invalid output asset");
+            }
+
+            // Validate amount ratio
+            require(steps[i].amountRatio > 0 && steps[i].amountRatio <= 10_000, "Invalid amount ratio"); // Max 100%
+
+            // Validate connector supports action
+            IConnector connector = IConnector(steps[i].connector);
+            require(
+                _isValidActionForConnector(connector.getConnectorType(), steps[i].actionType),
+                "Invalid action for connector type"
+            );
+        }
+
+        return true;
+    }
+
+    /**
+     * @dev Validates if an action is valid for a connector type
+     * @param connectorType Type of connector
+     * @param actionType Type of action
+     */
+    function _isValidActionForConnector(IConnector.ConnectorType connectorType, IConnector.ActionType actionType)
+        internal
+        pure
+        returns (bool)
+    {
+        if (connectorType == IConnector.ConnectorType.LENDING) {
+            return actionType == IConnector.ActionType.SUPPLY || actionType == IConnector.ActionType.WITHDRAW
+                || actionType == IConnector.ActionType.BORROW || actionType == IConnector.ActionType.REPAY;
+        } else if (connectorType == IConnector.ConnectorType.DEX) {
+            return actionType == IConnector.ActionType.SWAP;
+        } else if (connectorType == IConnector.ConnectorType.YIELD) {
+            return actionType == IConnector.ActionType.STAKE || actionType == IConnector.ActionType.UNSTAKE
+                || actionType == IConnector.ActionType.CLAIM;
+        }
+
+        return false;
+    }
+}
